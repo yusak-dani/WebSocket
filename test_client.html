@@ -1,0 +1,270 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Super Boltz Multiplayer Test</title>
+    <style>
+        body {
+            font-family: sans-serif;
+            padding: 20px;
+        }
+
+        #logs {
+            background: #eee;
+            padding: 10px;
+            height: 300px;
+            overflow-y: scroll;
+            font-family: monospace;
+            white-space: pre-wrap;
+        }
+
+        .panel {
+            border: 1px solid #ccc;
+            padding: 15px;
+            margin-bottom: 20px;
+        }
+
+        .hidden {
+            display: none;
+        }
+
+        button {
+            padding: 5px 10px;
+            cursor: pointer;
+        }
+
+        input {
+            padding: 5px;
+        }
+    </style>
+</head>
+
+<body>
+    <h1>Super Boltz Multiplayer</h1>
+
+    <div id="connectionPanel" class="panel">
+        <input type="text" id="username" placeholder="Your Username" value="Player1">
+        <button onclick="connectWS()">Connect to Server</button>
+    </div>
+
+    <div id="lobbyPanel" class="panel hidden">
+        <h3>Lobby</h3>
+        <button onclick="createRoom()">Create Room</button>
+        <hr>
+        <input type="text" id="joinCode" placeholder="Room Code">
+        <button onclick="joinRoom()">Join Room</button>
+    </div>
+
+    <div id="roomPanel" class="panel hidden">
+        <h3 id="roomTitle">Room: -</h3>
+        <p>Players: <span id="playerList"></span></p>
+        <button id="startBtn" onclick="startGame()" disabled>Start Game (Host Only)</button>
+        <button onclick="leaveRoom()" style="background-color: #dc3545; color: white;">Leave Room</button>
+    </div>
+
+    <div id="gamePanel" class="panel hidden">
+        <h3 style="color: red;">GAME STARTED! Solve the puzzle!</h3>
+        <p id="timer" style="font-size: 24px; font-weight: bold;">0.0s</p>
+        <button id="finishBtn" onclick="finishGame()"
+            style="background: green; color: white; padding: 10px 20px; font-size: 16px;">I
+            Finished!</button>
+        <button id="playAgainBtn" onclick="playAgain()"
+            style="background: #2196F3; color: white; padding: 10px 20px; font-size: 16px; display: none;">🔄 Play Again
+            (Host Only)</button>
+        <div id="gameOverText" style="display:none; margin-top: 10px;">
+            <h3 style="color: orange;">🏆 Game Over! Waiting for host to start new round...</h3>
+        </div>
+        <div id="leaderboard"></div>
+    </div>
+
+    <div class="panel">
+        <h3>Logs</h3>
+        <div id="logs"></div>
+    </div>
+
+    <script>
+        let ws;
+        let myUsername = '';
+        let myUserId = '';
+        let isHost = false;
+        let startTime = 0;
+        let timerInterval;
+
+        function log(msg) {
+            const logsDiv = document.getElementById('logs');
+            logsDiv.innerHTML += `<div>[${new Date().toLocaleTimeString()}] ${msg}</div>`;
+            logsDiv.scrollTop = logsDiv.scrollHeight;
+        }
+
+        function switchPanel(panelId) {
+            document.querySelectorAll('.panel').forEach(p => {
+                if (p.id !== 'logs' && !p.classList.contains('panel')) return;
+                if (p.id === 'connectionPanel' || p.id === 'lobbyPanel' || p.id === 'roomPanel' || p.id === 'gamePanel') {
+                    p.classList.add('hidden');
+                }
+            });
+            if (panelId) document.getElementById(panelId).classList.remove('hidden');
+        }
+
+        function connectWS() {
+            myUsername = document.getElementById('username').value;
+            myUserId = 'test-' + Math.random().toString(36).substring(2, 10); // Auto-generate UUID for testing
+            if (!myUsername) return alert("Enter username");
+
+            ws = new WebSocket('ws://localhost:8080/ws');
+
+            ws.onopen = () => {
+                log("Connected to WebSocket Server");
+                switchPanel('lobbyPanel');
+            };
+
+            ws.onmessage = (event) => {
+                const data = JSON.parse(event.data);
+                log("RECEIVED: " + data.type);
+                console.log(data);
+
+                switch (data.type) {
+                    case 'ROOM_JOINED':
+                        switchPanel('roomPanel');
+                        document.getElementById('roomTitle').innerText = "Room: " + data.payload.room_code;
+                        const players = data.payload.players;
+                        document.getElementById('playerList').innerText = players.map(p => p.username + (p.is_host ? ' (Host)' : '')).join(', ');
+
+                        // Check if I am host
+                        const me = players.find(p => p.username === myUsername);
+                        if (me && me.is_host) {
+                            isHost = true;
+                            document.getElementById('startBtn').disabled = false;
+                        } else {
+                            isHost = false;
+                            document.getElementById('startBtn').disabled = true;
+                        }
+                        break;
+                    case 'HOST_CHANGED':
+                        log("You are now the Host!");
+                        isHost = true;
+                        document.getElementById('startBtn').disabled = false;
+                        break;
+
+                    case 'GAME_STARTED':
+                        switchPanel('gamePanel');
+                        log("Game has started! Timer running...");
+                        startTime = Date.now();
+                        timerInterval = setInterval(() => {
+                            const elapsed = (Date.now() - startTime) / 1000;
+                            document.getElementById('timer').innerText = elapsed.toFixed(1) + "s";
+                        }, 100);
+                        break;
+
+                    case 'LEADERBOARD_UPDATE':
+                        let lbHTML = "<h4>Current Leaderboard:</h4><ol>";
+
+                        // Sort by score ascending (fastest time first)
+                        let sortedPlayers = data.payload.players.sort((a, b) => {
+                            if (a.score_time_ms == null) return 1;
+                            if (b.score_time_ms == null) return -1;
+                            return a.score_time_ms - b.score_time_ms;
+                        });
+
+                        let allDone = true;
+                        sortedPlayers.forEach(p => {
+                            let timeTxt = p.is_finished ? (p.score_time_ms / 1000).toFixed(2) + "s" : "Playing...";
+                            let ptsTxt = p.score != null ? `(${p.score} Pts)` : "";
+                            lbHTML += `<li>${p.username} - ${timeTxt} <span style="font-weight:bold;color:green">${ptsTxt}</span></li>`;
+                            if (!p.is_finished) allDone = false;
+                        });
+                        lbHTML += "</ol>";
+                        document.getElementById('leaderboard').innerHTML = lbHTML;
+
+                        // If all done, show game over text and play again button for host
+                        if (allDone) {
+                            document.getElementById('gameOverText').style.display = 'block';
+                            document.getElementById('finishBtn').style.display = 'none';
+                            clearInterval(timerInterval);
+                            if (isHost) {
+                                document.getElementById('playAgainBtn').style.display = 'inline-block';
+                            }
+                        }
+                        break;
+
+                    case 'BACK_TO_ROOM':
+                        // Server told us to go back to room lobby (leaderboard reset)
+                        log("Back to Room! Leaderboard reset.");
+                        switchPanel('roomPanel');
+                        // Reset game UI state
+                        document.getElementById('gameOverText').style.display = 'none';
+                        document.getElementById('playAgainBtn').style.display = 'none';
+                        document.getElementById('finishBtn').style.display = 'inline-block';
+                        document.getElementById('finishBtn').disabled = false;
+                        document.getElementById('leaderboard').innerHTML = '';
+                        document.getElementById('timer').innerText = '0.0s';
+                        clearInterval(timerInterval);
+                        break;
+
+                    case 'ERROR':
+                        alert("Error from server: " + data.payload.message);
+                        break;
+                }
+            };
+
+            ws.onclose = () => {
+                log("Disconnected");
+                switchPanel('connectionPanel');
+            };
+        }
+
+        function leaveRoom() {
+            if (ws && ws.readyState === WebSocket.OPEN) {
+                ws.send(JSON.stringify({ type: 'LEAVE_ROOM', payload: {} }));
+                log("Sending LEAVE_ROOM");
+            }
+            switchPanel('lobbyPanel');
+            document.getElementById('startBtn').disabled = true;
+            isHost = false;
+        }
+
+        function createRoom() {
+            ws.send(JSON.stringify({
+                type: 'CREATE_ROOM',
+                payload: { username: myUsername, user_id: myUserId }
+            }));
+            log("Sending CREATE_ROOM");
+        }
+
+        function joinRoom() {
+            const code = document.getElementById('joinCode').value.toUpperCase();
+            if (!code) return alert("Enter room code");
+            ws.send(JSON.stringify({
+                type: 'JOIN_ROOM',
+                payload: { room_code: code, username: myUsername, user_id: myUserId }
+            }));
+            log("Sending JOIN_ROOM " + code);
+        }
+
+        function startGame() {
+            if (!isHost) return;
+            ws.send(JSON.stringify({ type: 'START_GAME', payload: {} }));
+            log("Sending START_GAME");
+        }
+
+        function finishGame() {
+            clearInterval(timerInterval);
+            document.getElementById('finishBtn').disabled = true;
+            // Server calculates time (anti-cheat) — we just send the signal
+            ws.send(JSON.stringify({
+                type: 'FINISH_GAME',
+                payload: {}
+            }));
+            log("Sending FINISH_GAME (server will calculate time)");
+        }
+
+        function playAgain() {
+            ws.send(JSON.stringify({ type: 'PLAY_AGAIN', payload: {} }));
+            log("Sending PLAY_AGAIN");
+        }
+    </script>
+</body>
+
+</html>

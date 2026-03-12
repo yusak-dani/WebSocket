@@ -1,0 +1,23 @@
+# Environment Variables
+.env
+.env.*
+!.env.example
+
+# Go
+bin/
+obj/
+*.exe
+*.test
+*.out
+
+# NodeJS / Frontend (If any)
+node_modules/
+npm-debug.log
+yarn-error.log
+
+# IDEs and OS
+.vscode/
+.idea/
+.DS_Store
+*.suo
+*.user
