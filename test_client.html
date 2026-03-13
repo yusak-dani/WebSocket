@@ -134,8 +134,8 @@
                         
                         // Show players and their ready status
                         document.getElementById('playerList').innerHTML = players.map(p => {
-                            let role = p.is_host ? ' 👑' : '';
-                            let ready = p.is_ready ? ' <span style="color:green">✅ Ready</span>' : ' <span style="color:orange">⏳</span>';
+                            let role = p.is_host ? ' (Host)' : '';
+                            let ready = p.is_ready ? ' - <span style="color:green; font-weight:bold;">Ready</span>' : ' - <span style="color:orange; font-weight:bold;">Not Ready</span>';
                             return `<b>${p.username}</b>${role}${ready}`;
                         }).join(' | ');
 
