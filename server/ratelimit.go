@@ -4,14 +4,21 @@ import (
 	"log"
 	"net/http"
 	"sync"
+	"time"
 
 	"golang.org/x/time/rate"
 )
 
+// ipEntry holds a rate limiter and the last time it was accessed
+type ipEntry struct {
+	limiter  *rate.Limiter
+	lastSeen time.Time
+}
+
 // RateLimiter manages per-IP rate limiting
 type RateLimiter struct {
 	mu       sync.Mutex
-	limiters map[string]*rate.Limiter
+	limiters map[string]*ipEntry
 	rate     rate.Limit
 	burst    int
 }
@@ -19,10 +26,28 @@ type RateLimiter struct {
 // NewRateLimiter creates a rate limiter
 // r = requests per second, b = burst size
 func NewRateLimiter(r rate.Limit, b int) *RateLimiter {
-	return &RateLimiter{
-		limiters: make(map[string]*rate.Limiter),
+	rl := &RateLimiter{
+		limiters: make(map[string]*ipEntry),
 		rate:     r,
 		burst:    b,
+	}
+	// Start cleanup goroutine to prevent memory leak
+	go rl.cleanupLoop()
+	return rl
+}
+
+// cleanupLoop removes stale IP entries every 10 minutes
+func (rl *RateLimiter) cleanupLoop() {
+	ticker := time.NewTicker(10 * time.Minute)
+	defer ticker.Stop()
+	for range ticker.C {
+		rl.mu.Lock()
+		for ip, entry := range rl.limiters {
+			if time.Since(entry.lastSeen) > 30*time.Minute {
+				delete(rl.limiters, ip)
+			}
+		}
+		rl.mu.Unlock()
 	}
 }
 
@@ -31,13 +56,15 @@ func (rl *RateLimiter) GetLimiter(ip string) *rate.Limiter {
 	rl.mu.Lock()
 	defer rl.mu.Unlock()
 
-	limiter, exists := rl.limiters[ip]
+	entry, exists := rl.limiters[ip]
 	if !exists {
-		limiter = rate.NewLimiter(rl.rate, rl.burst)
-		rl.limiters[ip] = limiter
+		limiter := rate.NewLimiter(rl.rate, rl.burst)
+		rl.limiters[ip] = &ipEntry{limiter: limiter, lastSeen: time.Now()}
+		return limiter
 	}
 
-	return limiter
+	entry.lastSeen = time.Now()
+	return entry.limiter
 }
 
 // Allow checks if a request from the given IP is allowed
@@ -59,3 +86,4 @@ func RateLimitMiddleware(rl *RateLimiter, next http.HandlerFunc) http.HandlerFun
 		next(w, r)
 	}
 }
+

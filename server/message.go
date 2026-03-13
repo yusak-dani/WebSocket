@@ -71,7 +71,7 @@ type OutgoingError struct {
 	Message string `json:"message"`
 }
 
-// Helper to write message directly to WS
+// Helper to write message directly to WS (NOT thread-safe — use for pre-player connections only)
 func SendWSMessage(conn *websocket.Conn, msgType string, payload interface{}) error {
 	payloadBytes, err := json.Marshal(payload)
 	if err != nil {
@@ -84,4 +84,21 @@ func SendWSMessage(conn *websocket.Conn, msgType string, payload interface{}) er
 	}
 
 	return conn.WriteJSON(msg)
+}
+
+// SafeSendWSMessage writes to a Player's connection with mutex protection (thread-safe)
+func SafeSendWSMessage(player *Player, msgType string, payload interface{}) error {
+	payloadBytes, err := json.Marshal(payload)
+	if err != nil {
+		return err
+	}
+
+	msg := Message{
+		Type:    msgType,
+		Payload: payloadBytes,
+	}
+
+	player.WriteMu.Lock()
+	defer player.WriteMu.Unlock()
+	return player.Conn.WriteJSON(msg)
 }

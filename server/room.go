@@ -21,6 +21,7 @@ import (
 // Player represents a connection in the room (Lobby)
 type Player struct {
 	Conn        *websocket.Conn `json:"-"`
+	WriteMu     sync.Mutex      `json:"-"` // Protects concurrent writes to Conn
 	Username    string          `json:"username"`
 	UserID      string          `json:"user_id"`
 	IsHost      bool            `json:"is_host"`
@@ -53,7 +54,21 @@ func NewLobbyManager() *LobbyManager {
 }
 
 func (m *LobbyManager) Run() {
-	// Manager loop can be used to clean up dead rooms later
+	// Cleanup idle rooms every 5 minutes
+	ticker := time.NewTicker(5 * time.Minute)
+	defer ticker.Stop()
+	for range ticker.C {
+		m.mu.Lock()
+		for code, room := range m.Rooms {
+			room.mu.Lock()
+			if len(room.Players) == 0 {
+				delete(m.Rooms, code)
+				log.Printf("Room %s cleaned up (idle/empty)", code)
+			}
+			room.mu.Unlock()
+		}
+		m.mu.Unlock()
+	}
 }
 
 // RemoveRoom deletes a room from the manager
@@ -154,10 +169,7 @@ func handleClientRoutine(lobby *LobbyManager, conn *websocket.Conn, authUserID, 
 			if websocket.IsUnexpectedCloseError(err, websocket.CloseGoingAway, websocket.CloseAbnormalClosure) {
 				log.Printf("error: %v", err)
 			}
-			// Client disconnected, cleanup room logic here
-			if currentRoom != nil && currentPlayer != nil {
-				currentRoom.RemovePlayer(currentPlayer)
-			}
+			// Client disconnected — defer will handle RemovePlayer
 			break
 		}
 
@@ -243,10 +255,20 @@ func handleClientRoutine(lobby *LobbyManager, conn *websocket.Conn, authUserID, 
 }
 
 func (m *LobbyManager) CreateRoom(conn *websocket.Conn, username, userID string) (*GameRoom, *Player) {
-	// Generate random 4-char code
-	bytes := make([]byte, 2)
-	rand.Read(bytes)
-	code := strings.ToUpper(hex.EncodeToString(bytes))
+	// Generate random 4-char code with collision check
+	var code string
+	for {
+		bytes := make([]byte, 2)
+		rand.Read(bytes)
+		code = strings.ToUpper(hex.EncodeToString(bytes))
+
+		m.mu.Lock()
+		if _, exists := m.Rooms[code]; !exists {
+			break // Code is unique, keep the lock for insertion below
+		}
+		m.mu.Unlock()
+		// Code collision detected, try again
+	}
 
 	room := &GameRoom{
 		Code:       code,
@@ -265,8 +287,6 @@ func (m *LobbyManager) CreateRoom(conn *websocket.Conn, username, userID string)
 	}
 
 	room.Players[conn] = player
-
-	m.mu.Lock()
 	m.Rooms[code] = room
 	m.mu.Unlock()
 
@@ -288,13 +308,14 @@ func (m *LobbyManager) JoinRoom(conn *websocket.Conn, code, username, userID str
 	}
 
 	room.mu.Lock()
-	defer room.mu.Unlock()
 
 	if len(room.Players) >= room.MaxPlayers {
+		room.mu.Unlock()
 		return nil, nil, errors.New("Room is full")
 	}
 
 	if room.Status != "waiting" {
+		room.mu.Unlock()
 		return nil, nil, errors.New("Game already started")
 	}
 
@@ -308,11 +329,10 @@ func (m *LobbyManager) JoinRoom(conn *websocket.Conn, code, username, userID str
 
 	room.Players[conn] = player
 	log.Printf("Player %s joined Room %s", username, code)
-
-	// Broadcast update to all players in the room (unlock first since broadcast acquires no lock)
 	room.mu.Unlock()
+
+	// Broadcast update to all players — safely outside the lock
 	room.BroadcastRoomState()
-	room.mu.Lock() // re-lock because of deferred unlock
 
 	return room, player, nil
 }
@@ -364,7 +384,7 @@ func (r *GameRoom) RemovePlayer(playerToRemove *Player) {
 	
 	// If host changed, we might want to let the new host know specifically
 	if isHostLeaving && newHost != nil {
-		SendWSMessage(newHost.Conn, EventHostChanged, map[string]string{
+		SafeSendWSMessage(newHost, EventHostChanged, map[string]string{
 			"message": "You are now the Host!",
 		})
 	}
@@ -374,8 +394,10 @@ func (r *GameRoom) BroadcastRoomState() {
 	r.mu.Lock()
 	// Collect players to send
 	var playerList []Player
+	var players []*Player
 	for _, p := range r.Players {
 		playerList = append(playerList, *p) // Value copy for JSON
+		players = append(players, p)
 	}
 	r.mu.Unlock()
 
@@ -385,15 +407,8 @@ func (r *GameRoom) BroadcastRoomState() {
 		MaxPlayers: r.MaxPlayers,
 	}
 
-	r.mu.Lock()
-	conns := make([]*websocket.Conn, 0, len(r.Players))
-	for conn := range r.Players {
-		conns = append(conns, conn)
-	}
-	r.mu.Unlock()
-
-	for _, conn := range conns {
-		SendWSMessage(conn, EventRoomJoined, update)
+	for _, p := range players {
+		SafeSendWSMessage(p, EventRoomJoined, update)
 	}
 }
 
@@ -405,16 +420,16 @@ func (r *GameRoom) StartGame() {
 	}
 	r.Status = "playing"
 	r.GameStartTime = time.Now() // Record server-side start time
-	conns := make([]*websocket.Conn, 0, len(r.Players))
-	for conn := range r.Players {
-		conns = append(conns, conn)
+	players := make([]*Player, 0, len(r.Players))
+	for _, p := range r.Players {
+		players = append(players, p)
 	}
 	r.mu.Unlock()
 
 	log.Printf("Room %s: Game Started (server time: %v)", r.Code, r.GameStartTime)
 
-	for _, conn := range conns {
-		SendWSMessage(conn, EventGameStarted, nil)
+	for _, p := range players {
+		SafeSendWSMessage(p, EventGameStarted, nil)
 	}
 }
 
@@ -467,6 +482,7 @@ func (r *GameRoom) PlayerFinished(player *Player) {
 func (r *GameRoom) BroadcastLeaderboard() {
 	r.mu.Lock()
 	var leaderboard []PlayerScore
+	var players []*Player
 
 	for _, p := range r.Players {
 		var calculatedScore *int
@@ -484,11 +500,7 @@ func (r *GameRoom) BroadcastLeaderboard() {
 			Score:       calculatedScore,
 			IsFinished:  p.IsFinished,
 		})
-	}
-
-	conns := make([]*websocket.Conn, 0, len(r.Players))
-	for conn := range r.Players {
-		conns = append(conns, conn)
+		players = append(players, p)
 	}
 	r.mu.Unlock()
 
@@ -514,8 +526,8 @@ func (r *GameRoom) BroadcastLeaderboard() {
 
 	msg := OutgoingLeaderboard{Players: leaderboard}
 
-	for _, conn := range conns {
-		SendWSMessage(conn, EventLeaderboard, msg)
+	for _, p := range players {
+		SafeSendWSMessage(p, EventLeaderboard, msg)
 	}
 }
 
@@ -533,6 +545,11 @@ func (r *GameRoom) ResetForNewRound() {
 		p.IsFinished = false
 	}
 	r.Status = "waiting"
+
+	players := make([]*Player, 0, len(r.Players))
+	for _, p := range r.Players {
+		players = append(players, p)
+	}
 	r.mu.Unlock()
 
 	log.Printf("Room %s: Reset for new round", r.Code)
@@ -541,15 +558,8 @@ func (r *GameRoom) ResetForNewRound() {
 	r.BroadcastRoomState()
 
 	// Send explicit BACK_TO_ROOM event so client knows to switch UI
-	r.mu.Lock()
-	conns := make([]*websocket.Conn, 0, len(r.Players))
-	for conn := range r.Players {
-		conns = append(conns, conn)
-	}
-	r.mu.Unlock()
-
-	for _, conn := range conns {
-		SendWSMessage(conn, EventBackToRoom, nil)
+	for _, p := range players {
+		SafeSendWSMessage(p, EventBackToRoom, nil)
 	}
 }
 

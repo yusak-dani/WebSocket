@@ -16,11 +16,16 @@ CREATE TABLE IF NOT EXISTS public.matches (
   created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
 );
 
+-- Index untuk mempercepat pencarian berdasarkan room_code
+CREATE INDEX IF NOT EXISTS idx_matches_room_code ON public.matches(room_code);
+
 -- 3. Buat tabel untuk Leaderboard In-Lobby / Room (Pemain di dalam Room)
+-- CATATAN: user_id bertipe TEXT (bukan UUID) karena saat testing, client mengirimkan string biasa.
+-- Jika sudah menggunakan Supabase Auth, bisa diganti ke UUID dan ditambahkan FK ke users(id).
 CREATE TABLE IF NOT EXISTS public.match_players (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   match_id UUID NOT NULL REFERENCES public.matches(id) ON DELETE CASCADE,
-  user_id UUID NOT NULL REFERENCES public.users(id) ON DELETE CASCADE,
+  user_id TEXT NOT NULL,   -- Tidak ada FK ke users karena server tidak melakukan INSERT ke tabel users
   score_time_ms INTEGER DEFAULT NULL, -- Waktu selesaikan puzzle (kecil = lebih baik), null = belum selesai
   score INTEGER DEFAULT NULL,         -- Calculated points (100000 - score_time_ms), higher = better
   is_winner BOOLEAN DEFAULT FALSE,
@@ -43,3 +48,4 @@ CREATE POLICY "Allow public read-only match_players" ON public.match_players FOR
 CREATE POLICY "Allow public read-only users" ON public.users FOR SELECT USING (true);
 
 -- Catatan: Akses INSERT/UPDATE biarkan tertutup (karena hanya diizinkan melalui server Golang dengan Service Key).
+
