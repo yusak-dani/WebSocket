@@ -25,6 +25,7 @@ type Player struct {
 	Username    string          `json:"username"`
 	UserID      string          `json:"user_id"`
 	IsHost      bool            `json:"is_host"`
+	IsReady     bool            `json:"is_ready"`
 	ScoreTimeMs *int            `json:"score_time_ms,omitempty"`
 	IsFinished  bool            `json:"is_finished"`
 	JoinedAt    time.Time       `json:"joined_at"`
@@ -228,9 +229,11 @@ func handleClientRoutine(lobby *LobbyManager, conn *websocket.Conn, authUserID, 
 			}
 		// Game flow logic
 		case EventStartGame:
-			// Only Host can start the game
+			// Only Host can start the game AND all players must be ready
 			if currentPlayer != nil && currentPlayer.IsHost && currentRoom != nil {
-				currentRoom.StartGame()
+				if err := currentRoom.StartGame(); err != nil {
+					SendWSMessage(conn, EventError, OutgoingError{Message: err.Error()})
+				}
 			}
 		case EventFinishGame:
 			// Server calculates time — client payload is ignored (anti-cheat)
@@ -247,6 +250,10 @@ func handleClientRoutine(lobby *LobbyManager, conn *websocket.Conn, authUserID, 
 				currentRoom.RemovePlayer(currentPlayer)
 				currentRoom = nil
 				currentPlayer = nil
+			}
+		case EventPlayerReady:
+			if currentRoom != nil && currentPlayer != nil {
+				currentRoom.ToggleReady(currentPlayer)
 			}
 		default:
 			log.Println("Unknown message type:", msg.Type)
@@ -412,12 +419,34 @@ func (r *GameRoom) BroadcastRoomState() {
 	}
 }
 
-func (r *GameRoom) StartGame() {
+func (r *GameRoom) ToggleReady(player *Player) {
+	r.mu.Lock()
+	if r.Status != "waiting" {
+		r.mu.Unlock()
+		return
+	}
+
+	player.IsReady = !player.IsReady
+	r.mu.Unlock()
+
+	r.BroadcastRoomState()
+}
+
+func (r *GameRoom) StartGame() error {
 	r.mu.Lock()
 	if r.Status == "playing" {
 		r.mu.Unlock()
-		return // Already playing
+		return errors.New("game already playing")
 	}
+
+	// Check if all players are ready
+	for _, p := range r.Players {
+		if !p.IsReady {
+			r.mu.Unlock()
+			return fmt.Errorf("player %s is not ready", p.Username)
+		}
+	}
+
 	r.Status = "playing"
 	r.GameStartTime = time.Now() // Record server-side start time
 	players := make([]*Player, 0, len(r.Players))
@@ -431,6 +460,7 @@ func (r *GameRoom) StartGame() {
 	for _, p := range players {
 		SafeSendWSMessage(p, EventGameStarted, nil)
 	}
+	return nil
 }
 
 func (r *GameRoom) PlayerFinished(player *Player) {
@@ -543,6 +573,7 @@ func (r *GameRoom) ResetForNewRound() {
 	for _, p := range r.Players {
 		p.ScoreTimeMs = nil
 		p.IsFinished = false
+		p.IsReady = false // Reset readiness
 	}
 	r.Status = "waiting"
 

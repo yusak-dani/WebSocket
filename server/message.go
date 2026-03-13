@@ -24,6 +24,7 @@ const (
 	EventLeaveRoom   = "LEAVE_ROOM"
 	EventPlayerLeft  = "PLAYER_LEFT"
 	EventHostChanged = "HOST_CHANGED"
+	EventPlayerReady = "PLAYER_READY"
 )
 
 // Message is the generic container for WS payload

@@ -58,8 +58,9 @@
     </div>
 
     <div id="roomPanel" class="panel hidden">
-        <h3 id="roomTitle">Room: -</h3>
+        <h2 id="roomTitle">Room: </h2>
         <p>Players: <span id="playerList"></span></p>
+        <button id="readyBtn" onclick="toggleReady()" style="background-color: orange; color: white;">Ready</button>
         <button id="startBtn" onclick="startGame()" disabled>Start Game (Host Only)</button>
         <button onclick="leaveRoom()" style="background-color: #dc3545; color: white;">Leave Room</button>
     </div>
@@ -130,16 +131,30 @@
                         switchPanel('roomPanel');
                         document.getElementById('roomTitle').innerText = "Room: " + data.payload.room_code;
                         const players = data.payload.players;
-                        document.getElementById('playerList').innerText = players.map(p => p.username + (p.is_host ? ' (Host)' : '')).join(', ');
+                        
+                        // Show players and their ready status
+                        document.getElementById('playerList').innerHTML = players.map(p => {
+                            let role = p.is_host ? ' 👑' : '';
+                            let ready = p.is_ready ? ' <span style="color:green">✅ Ready</span>' : ' <span style="color:orange">⏳</span>';
+                            return `<b>${p.username}</b>${role}${ready}`;
+                        }).join(' | ');
 
                         // Check if I am host
                         const me = players.find(p => p.username === myUsername);
-                        if (me && me.is_host) {
-                            isHost = true;
-                            document.getElementById('startBtn').disabled = false;
-                        } else {
-                            isHost = false;
-                            document.getElementById('startBtn').disabled = true;
+                        if (me) {
+                            // Update my ready button color
+                            document.getElementById('readyBtn').style.backgroundColor = me.is_ready ? 'green' : 'orange';
+                            document.getElementById('readyBtn').innerText = me.is_ready ? 'Unready' : 'Ready';
+                            
+                            if (me.is_host) {
+                                isHost = true;
+                                // Host can only start if ALL players are ready
+                                const allReady = players.every(p => p.is_ready);
+                                document.getElementById('startBtn').disabled = !allReady;
+                            } else {
+                                isHost = false;
+                                document.getElementById('startBtn').disabled = true;
+                            }
                         }
                         break;
                     case 'HOST_CHANGED':
@@ -241,6 +256,11 @@
                 payload: { room_code: code, username: myUsername, user_id: myUserId }
             }));
             log("Sending JOIN_ROOM " + code);
+        }
+
+        function toggleReady() {
+            ws.send(JSON.stringify({ type: 'PLAYER_READY', payload: {} }));
+            log("Sending PLAYER_READY toggle");
         }
 
         function startGame() {
