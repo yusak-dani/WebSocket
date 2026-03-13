@@ -113,7 +113,7 @@
             myUserId = 'test-' + Math.random().toString(36).substring(2, 10); // Auto-generate UUID for testing
             if (!myUsername) return alert("Enter username");
 
-            ws = new WebSocket('ws://localhost:8080/ws');
+            ws = new WebSocket('wss://websocket-production-3084.up.railway.app/ws');
 
             ws.onopen = () => {
                 log("Connected to WebSocket Server");
