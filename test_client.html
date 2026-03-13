@@ -129,7 +129,12 @@
 
                 switch (data.type) {
                     case 'ROOM_JOINED':
-                        switchPanel('roomPanel');
+                        // Only switch to room panel if we are in the waiting state
+                        // Otherwise, we might be in the middle of a game or looking at the leaderboard
+                        if (data.payload.status === 'waiting') {
+                            switchPanel('roomPanel');
+                        }
+
                         document.getElementById('roomTitle').innerText = "Room: " + data.payload.room_code;
                         const players = data.payload.players;
                         

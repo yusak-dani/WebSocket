@@ -441,6 +441,7 @@ func (r *GameRoom) BroadcastRoomState() {
 
 	update := OutgoingRoomUpdate{
 		RoomCode:   r.Code,
+		Status:     r.Status,
 		Players:    playerList,
 		MaxPlayers: r.MaxPlayers,
 	}
