@@ -384,6 +384,24 @@ func (r *GameRoom) RemovePlayer(playerToRemove *Player) {
 			log.Printf("Room %s: Host transferred to %s", r.Code, newHost.Username)
 		}
 	}
+
+	// Check if the game should finish because the remaining players are already done
+	var allFinished bool
+	if r.Status == "playing" && len(r.Players) > 0 {
+		allFinished = true
+		for _, p := range r.Players {
+			if !p.IsFinished {
+				allFinished = false
+				break
+			}
+		}
+
+		if allFinished {
+			r.Status = "finished"
+			log.Printf("Room %s: Game Finished! (Player leaving caused remaining to be done)", r.Code)
+		}
+	}
+
 	r.mu.Unlock()
 
 	// Notify remaining players
@@ -395,16 +413,29 @@ func (r *GameRoom) RemovePlayer(playerToRemove *Player) {
 			"message": "You are now the Host!",
 		})
 	}
+
+	// If the game just finished due to the player leaving, trigger the finish routines
+	if allFinished {
+		r.BroadcastLeaderboard()
+
+		r.mu.Lock()
+		playersCopy := make(map[string]*Player)
+		for _, p := range r.Players {
+			playersCopy[p.UserID] = p
+		}
+		roomCode := r.Code
+		r.mu.Unlock()
+
+		go SaveMatchResults(roomCode, playersCopy)
+	}
 }
 
 func (r *GameRoom) BroadcastRoomState() {
 	r.mu.Lock()
 	// Collect players to send
-	var playerList []Player
-	var players []*Player
+	var playerList []*Player
 	for _, p := range r.Players {
-		playerList = append(playerList, *p) // Value copy for JSON
-		players = append(players, p)
+		playerList = append(playerList, p) 
 	}
 	r.mu.Unlock()
 
@@ -414,7 +445,7 @@ func (r *GameRoom) BroadcastRoomState() {
 		MaxPlayers: r.MaxPlayers,
 	}
 
-	for _, p := range players {
+	for _, p := range playerList {
 		SafeSendWSMessage(p, EventRoomJoined, update)
 	}
 }

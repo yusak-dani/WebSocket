@@ -51,8 +51,8 @@ type PayloadFinishGame struct {
 
 // Payload structs for Marshal (Outgoing)
 type OutgoingRoomUpdate struct {
-	RoomCode string   `json:"room_code"`
-	Players  []Player `json:"players"`
+	RoomCode string      `json:"room_code"`
+	Players  []*Player `json:"players"`
 	MaxPlayers int    `json:"max_players"`
 }
 
